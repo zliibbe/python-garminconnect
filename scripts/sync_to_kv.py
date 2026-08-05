@@ -198,11 +198,43 @@ def sync_recent_activities(
     return None
 
 
+def sync_training_metrics(garmin: Garmin, d: date) -> dict[str, Any] | None:
+    """Training readiness/status, VO2 max, race predictions, endurance score.
+
+    ``race_predictions`` always reflects Garmin's *current* latest
+    prediction regardless of ``d`` (the API has no historical-lookup mode
+    for it), so it'll be identical across every date in a backfill run --
+    included anyway so the dashboard always has it alongside whichever
+    day is shown.
+    """
+    cdate = d.isoformat()
+    blob: dict[str, Any] = {"date": cdate}
+    any_success = False
+
+    calls: list[tuple[str, Callable[..., Any], tuple[Any, ...]]] = [
+        ("training_readiness", garmin.get_training_readiness, (cdate,)),
+        ("training_status", garmin.get_training_status, (cdate,)),
+        ("max_metrics", garmin.get_max_metrics, (cdate,)),
+        ("race_predictions", garmin.get_race_predictions, ()),
+        ("endurance_score", garmin.get_endurance_score, (cdate,)),
+    ]
+    for field, api_method, args in calls:
+        ok, result, err = safe_api_call(api_method, *args)
+        if ok and result is not None:
+            blob[field] = result
+            any_success = True
+        elif err:
+            logger.warning("training %s: %s failed: %s", cdate, field, err)
+
+    return blob if any_success else None
+
+
 # Categories are added one phase at a time (see the plan's build order):
 # sleep (Phase 1) -> activity (Phase 2) -> activities (Phase 3) -> training (Phase 4).
 CATEGORIES: dict[str, Callable[[Garmin, date], dict[str, Any] | None]] = {
     "sleep": sync_sleep_recovery,
     "activity": sync_daily_activity,
+    "training": sync_training_metrics,
 }
 
 # "activities" has no per-day backfill loop (see sync_recent_activities);
