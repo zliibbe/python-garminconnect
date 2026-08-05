@@ -2,8 +2,8 @@ name: Sync Garmin Data to KV
 
 "on":
   workflow_dispatch: {}
-  # schedule trigger is added once a few manual runs have been verified —
-  # see the plan's step-by-step setup walkthrough.
+  schedule:
+    - cron: '0 8 * * *' # daily, 08:00 UTC
 
 permissions:
   contents: read
