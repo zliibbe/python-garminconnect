@@ -181,6 +181,23 @@ def sync_daily_activity(garmin: Garmin, d: date) -> dict[str, Any] | None:
     return blob if any_success else None
 
 
+def sync_recent_activities(
+    garmin: Garmin, limit: int = 20
+) -> list[dict[str, Any]] | None:
+    """Most recent Garmin-logged activities.
+
+    Unlike the other categories, this has no per-day time series -- it's a
+    single "latest N" list, wholesale-replaced each run (mirrors the
+    existing Strava ``latest_activity`` KV precedent on the website side).
+    """
+    ok, result, err = safe_api_call(garmin.get_activities, 0, limit)
+    if ok and isinstance(result, list):
+        return result
+    if err:
+        logger.warning("activities: get_activities failed: %s", err)
+    return None
+
+
 # Categories are added one phase at a time (see the plan's build order):
 # sleep (Phase 1) -> activity (Phase 2) -> activities (Phase 3) -> training (Phase 4).
 CATEGORIES: dict[str, Callable[[Garmin, date], dict[str, Any] | None]] = {
@@ -188,13 +205,20 @@ CATEGORIES: dict[str, Callable[[Garmin, date], dict[str, Any] | None]] = {
     "activity": sync_daily_activity,
 }
 
+# "activities" has no per-day backfill loop (see sync_recent_activities);
+# it's dispatched separately in main() rather than living in CATEGORIES.
+SPECIAL_CATEGORIES = {"activities"}
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--categories",
         default="sleep",
-        help=f"Comma-separated categories to sync. Available: {', '.join(CATEGORIES)}",
+        help=(
+            "Comma-separated categories to sync. "
+            f"Available: {', '.join([*CATEGORIES, *SPECIAL_CATEGORIES])}"
+        ),
     )
     parser.add_argument(
         "--backfill-days",
@@ -213,13 +237,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
+    known_categories = {*CATEGORIES, *SPECIAL_CATEGORIES}
     requested = [c.strip() for c in args.categories.split(",") if c.strip()]
-    unknown = [c for c in requested if c not in CATEGORIES]
+    unknown = [c for c in requested if c not in known_categories]
     if unknown:
         logger.error(
             "Unknown categories: %s. Available: %s",
             ", ".join(unknown),
-            ", ".join(CATEGORIES),
+            ", ".join(known_categories),
         )
         return 1
 
@@ -244,6 +269,28 @@ def main(argv: list[str] | None = None) -> int:
         dates = [today - timedelta(days=i) for i in range(args.backfill_days)]
 
         for category in requested:
+            if category in SPECIAL_CATEGORIES:
+                try:
+                    activities = sync_recent_activities(garmin)
+                except GarminConnectAuthenticationError as err:
+                    logger.exception("Authentication failed mid-run: %s", err)
+                    had_failure = True
+                    continue
+                except GarminConnectTooManyRequestsError as err:
+                    logger.exception("Rate limited mid-run: %s", err)
+                    had_failure = True
+                    continue
+
+                if activities is None:
+                    logger.warning("%s: no data available", category)
+                    had_failure = True
+                    continue
+
+                if not args.dry_run:
+                    redis.set(latest_key(category), json.dumps(activities))
+                logger.info("%s: %d activities synced", category, len(activities))
+                continue
+
             sync_fn = CATEGORIES[category]
             successes = 0
             for d in dates:
