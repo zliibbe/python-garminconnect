@@ -6,7 +6,7 @@ name: Sync Garmin Data to KV
       categories:
         description: "Comma-separated categories to sync"
         required: false
-        default: "sleep"
+        default: "sleep,activity,activities,training"
       backfill_days:
         description: "Days to backfill (e.g. 100 for a one-time historical seed)"
         required: false
@@ -44,7 +44,7 @@ jobs:
       - name: Run sync
         run: pdm run python scripts/sync_to_kv.py --categories "$CATEGORIES" --backfill-days "$BACKFILL_DAYS"
         env:
-          CATEGORIES: ${{ inputs.categories || 'sleep' }}
+          CATEGORIES: ${{ inputs.categories || 'sleep,activity,activities,training' }}
           BACKFILL_DAYS: ${{ inputs.backfill_days || '3' }}
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
