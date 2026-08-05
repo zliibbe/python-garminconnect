@@ -108,11 +108,18 @@ def save_tokens(redis: Redis, garmin: Garmin) -> None:
 
 def write_daily_snapshot(
     redis: Redis, category: str, d: date, blob: dict[str, Any]
-) -> None:
+) -> str:
+    """Write a day's blob and its series index entry; return the serialized payload.
+
+    Does *not* touch ``latest_key`` -- the caller is responsible for that,
+    since "latest" must mean the chronologically most recent successful
+    write in the run, not simply the last one processed (the backfill loop
+    walks dates newest-first, so "last processed" is actually the oldest).
+    """
     payload = json.dumps(blob)
     redis.set(day_key(category, d), payload)
     redis.zadd(series_key(category), {d.isoformat(): int(d.strftime("%Y%m%d"))})
-    redis.set(latest_key(category), payload)
+    return payload
 
 
 def trim_series(redis: Redis, category: str, retention_days: int) -> None:
@@ -325,6 +332,10 @@ def main(argv: list[str] | None = None) -> int:
 
             sync_fn = CATEGORIES[category]
             successes = 0
+            # dates is newest-first, so the first successful write here is
+            # the chronologically most recent one -- that's what "latest"
+            # should mean, not whichever write happens to run last.
+            latest_payload: str | None = None
             for d in dates:
                 try:
                     blob = sync_fn(garmin, d)
@@ -343,11 +354,15 @@ def main(argv: list[str] | None = None) -> int:
                     continue
 
                 if not args.dry_run:
-                    write_daily_snapshot(redis, category, d, blob)
+                    payload = write_daily_snapshot(redis, category, d, blob)
+                    if latest_payload is None:
+                        latest_payload = payload
                 successes += 1
                 logger.info("%s %s: synced", category, d.isoformat())
 
             if not args.dry_run:
+                if latest_payload is not None:
+                    redis.set(latest_key(category), latest_payload)
                 trim_series(redis, category, RETENTION_DAYS)
 
             logger.info("%s: %d/%d date(s) synced", category, successes, len(dates))
