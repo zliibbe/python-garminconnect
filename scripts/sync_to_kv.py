@@ -159,10 +159,33 @@ def sync_sleep_recovery(garmin: Garmin, d: date) -> dict[str, Any] | None:
     return blob if any_success else None
 
 
+def sync_daily_activity(garmin: Garmin, d: date) -> dict[str, Any] | None:
+    """Steps, calories, distance, and floors for one day."""
+    cdate = d.isoformat()
+    blob: dict[str, Any] = {"date": cdate}
+    any_success = False
+
+    calls: list[tuple[str, Callable[..., Any], tuple[Any, ...]]] = [
+        ("summary", garmin.get_user_summary, (cdate,)),
+        ("steps", garmin.get_steps_data, (cdate,)),
+        ("floors", garmin.get_floors, (cdate,)),
+    ]
+    for field, api_method, args in calls:
+        ok, result, err = safe_api_call(api_method, *args)
+        if ok and result is not None:
+            blob[field] = result
+            any_success = True
+        elif err:
+            logger.warning("activity %s: %s failed: %s", cdate, field, err)
+
+    return blob if any_success else None
+
+
 # Categories are added one phase at a time (see the plan's build order):
 # sleep (Phase 1) -> activity (Phase 2) -> activities (Phase 3) -> training (Phase 4).
 CATEGORIES: dict[str, Callable[[Garmin, date], dict[str, Any] | None]] = {
     "sleep": sync_sleep_recovery,
+    "activity": sync_daily_activity,
 }
 
 
