@@ -107,6 +107,9 @@ testing = [
 example = [
     "readchar",
 ]
+sync = [
+    "upstash-redis",
+]
 
 [tool.pdm]
 distribution = true
